@@ -12,7 +12,9 @@ logger = logging.getLogger(__name__)
 
 class AIGenerator:
     def __init__(self):
-        api_key = os.getenv('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')
+        # ✅ ПРАВИЛЬНО: читаем из .env по имени переменной
+        api_key = os.getenv('OPENROUTER_API_KEY')
+        
         if not api_key:
             raise ValueError("❌ Не найден OPENROUTER_API_KEY в .env")
         
