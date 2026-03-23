@@ -1,188 +1,244 @@
-#!/usr/bin/env python3
-import asyncio
+"""
+Главный файл для запуска бота
+"""
+
+import sys
 import time
-from datetime import datetime
+import logging
 from apscheduler.schedulers.blocking import BlockingScheduler
-from apscheduler.triggers.interval import IntervalTrigger
+from apscheduler.triggers.cron import CronTrigger
+from datetime import datetime
+from dotenv import load_dotenv
 
-from config import BOTS, PARSE_INTERVAL_MINUTES, FILTER_HOURS
-from parser import ApptekParser
-from poster import TelegramPoster
+from config import CHANNELS
+from parser import ApptekaPars
 from database import Database
+from poster import TelegramPoster
+from ai_generator import AIGenerator
+
+# Загрузка .env
+load_dotenv()
+
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('bot.log'),
+        logging.StreamHandler()
+    ]
+)
+
+logger = logging.getLogger(__name__)
 
 
-class ApptekaBot:
-    def __init__(self):
-        self.parser = ApptekParser()
-        self.db = Database()
-        self.posters = {}
-        
-        # Инициализация постеров для каждого канала
-        for channel_name, config in BOTS.items():
-            if config.get('token') and config.get('channel'):
-                self.posters[channel_name] = {
-                    'poster': TelegramPoster(
-                        bot_token=config['token'],
-                        channel_id=config['channel'],
-                        channel_name=channel_name
-                    ),
-                    'config': config
-                }
+def check_configuration():
+    """Проверка конфигурации перед запуском"""
     
-    async def test_all_connections(self):
-        """Тестирует подключение ко всем ботам и каналам"""
-        print("\n🔍 Проверка подключений...\n")
-        
-        all_ok = True
-        for channel_name, data in self.posters.items():
-            ok = await data['poster'].test_connection()
-            if not ok:
-                all_ok = False
-        
-        if all_ok:
-            print("\n✅ Все подключения работают!\n")
+    print("🔍 Проверка конфигурации...\n")
+    
+    # Проверка каналов
+    print(f"📢 Настроено каналов: {len(CHANNELS)}\n")
+    for channel_name, channel_config in CHANNELS.items():
+        print(f"  • {channel_name.upper()}")
+        print(f"    ID канала: {channel_config['channel_id']}")
+        print(f"    Категории: {channel_config.get('categories', 'Все')}")
+        print(f"    Ключевые слова: {channel_config.get('keywords', 'Нет')}")
+        print()
+    
+    # Проверка парсера
+    try:
+        parser = ApptekaPars()
+        apps = parser.get_latest_apps(limit=1)
+        if apps:
+            print("✅ Appteka API доступен")
+            print(f"   Последнее приложение: {apps[0]['label']}\n")
         else:
-            print("\n⚠️ Есть проблемы с подключениями. Проверь .env файл\n")
-        
-        return all_ok
+            print("⚠️ API вернул пустой список\n")
+    except Exception as e:
+        print(f"❌ Ошибка подключения к Appteka: {e}\n")
+        sys.exit(1)
     
-    async def process_apps(self):
-        """Основной процесс: парсинг + фильтрация + постинг"""
-        print(f"\n{'='*60}")
-        print(f"🚀 Запуск парсинга: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"{'='*60}\n")
+    # Проверка БД
+    try:
+        db = Database()
+        print(f"✅ База данных инициализирована")
+        print(f"   Постов в базе: {db.count_posted_apps()}\n")
+    except Exception as e:
+        print(f"❌ Ошибка БД: {e}\n")
+        sys.exit(1)
+    
+    # Проверка AI
+    try:
+        ai = AIGenerator()
+        test_desc = ai.generate_description(
+            app_name="Test App",
+            category="Games",
+            version="1.0",
+            downloads=10,
+            channel_type="games"
+        )
+        if test_desc:
+            print("✅ OpenRouter AI подключен")
+            print(f"   Модель: {ai.model}")
+            print(f"   Тест: {test_desc[:50]}...\n")
+        else:
+            print("⚠️ AI работает, но вернул пустой ответ\n")
+    except Exception as e:
+        print(f"❌ Ошибка AI: {e}\n")
+        print("⚠️ Бот продолжит работу с fallback-описаниями\n")
+    
+    # Проверка Telegram ботов
+    for channel_name, channel_config in CHANNELS.items():
+        try:
+            poster = TelegramPoster(channel_name)
+            print(f"✅ Telegram бот для {channel_name} подключен")
+        except Exception as e:
+            print(f"❌ Ошибка бота {channel_name}: {e}\n")
+            sys.exit(1)
+    
+    print("\n✅ Конфигурация корректна!")
+
+
+def process_new_apps():
+    """
+    Основная функция: парсинг + постинг
+    """
+    logger.info("=" * 50)
+    logger.info("🚀 Запуск обработки новых приложений")
+    
+    try:
+        # Инициализация
+        parser = ApptekaPars()
+        db = Database()
         
-        # Получаем приложения
-        print("📡 Получаем список приложений...")
-        apps = self.parser.get_apps(page=0)
+        # Получаем свежие приложения
+        apps = parser.get_latest_apps(limit=50)
+        logger.info(f"📦 Получено приложений: {len(apps)}")
         
-        if not apps:
-            print("⚠️ Не удалось получить приложения")
-            return
-        
-        print(f"✅ Получено: {len(apps)} приложений")
-        
-        # Фильтруем новые
-        new_apps = self.parser.filter_new_apps(apps, hours=FILTER_HOURS)
-        print(f"🆕 Новых за {FILTER_HOURS}ч: {len(new_apps)}")
-        
-        if not new_apps:
-            print("ℹ️ Нет новых приложений для публикации")
-            return
+        posted_count = 0
         
         # Обрабатываем каждый канал
-        for channel_name, data in self.posters.items():
-            poster = data['poster']
-            config = data['config']
+        for channel_name, channel_config in CHANNELS.items():
+            logger.info(f"\n📢 Обработка канала: {channel_name}")
             
-            print(f"\n📢 Обработка канала: {channel_name}")
+            poster = TelegramPoster(channel_name)
             
-            # Фильтруем по настройкам канала
-            filtered_apps = new_apps.copy()
+            # Фильтруем приложения под канал
+            filtered_apps = parser.filter_for_channel(apps, channel_config)
+            logger.info(f"   Подходящих приложений: {len(filtered_apps)}")
             
-            # Фильтр по категориям
-            if config.get('categories') != 'all':
-                filtered_apps = self.parser.filter_by_category(
-                    filtered_apps,
-                    config.get('categories', [])
-                )
-            
-            # Фильтр по ключевым словам (для премиум-канала)
-            if config.get('keywords'):
-                filtered_apps = self.parser.filter_by_keywords(
-                    filtered_apps,
-                    config.get('keywords', [])
-                )
-            
-            # Фильтр по минимальным скачиваниям
-            min_downloads = config.get('min_downloads', 0)
-            if min_downloads > 0:
-                filtered_apps = self.parser.filter_by_downloads(
-                    filtered_apps,
-                    min_downloads
-                )
-            
-            print(f"   После фильтрации: {len(filtered_apps)} приложений")
-            
-            # Постим
-            posted_count = 0
-            is_premium = channel_name == 'premium'
-            
+            # Постим новые
             for app in filtered_apps:
-                success = await poster.post_app(app, is_premium=is_premium)
+                app_id = app['app_id']
+                
+                # Проверяем, не постили ли уже
+                if db.is_posted(app_id, channel_name):
+                    continue
+                
+                # Постим
+                success = poster.post_app(app)
+                
                 if success:
+                    db.mark_as_posted(app_id, channel_name)
                     posted_count += 1
-                    # Задержка между постами (чтобы не флудить)
-                    await asyncio.sleep(3)
-            
-            print(f"   ✅ Запостили: {posted_count} приложений")
+                    logger.info(f"   ✅ Запощено: {app['label']}")
+                    
+                    # Пауза между постами (антиспам)
+                    time.sleep(5)
+                else:
+                    logger.error(f"   ❌ Не удалось запостить: {app['label']}")
         
-        # Статистика
-        print(f"\n📊 Всего в базе запощено: {self.db.get_posted_count()} приложений")
+        logger.info(f"\n✅ Обработка завершена. Новых постов: {posted_count}")
         
-        # Очистка старых записей (раз в день)
-        if datetime.now().hour == 3:  # В 3 ночи
-            deleted = self.db.cleanup_old(days=30)
-            print(f"🗑️ Очищено старых записей: {deleted}")
-        
-        print(f"\n{'='*60}")
-        print(f"✅ Парсинг завершён: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"{'='*60}\n")
+    except Exception as e:
+        logger.error(f"❌ Критическая ошибка: {e}", exc_info=True)
+
+
+def test_post():
+    """
+    Тестовый пост (для проверки)
+    """
+    print("🧪 Тестовый режим\n")
     
-    def run_once(self):
-        """Запуск один раз (для тестирования)"""
-        asyncio.run(self.process_apps())
+    parser = ApptekaPars()
+    apps = parser.get_latest_apps(limit=1)
     
-    def run_scheduler(self):
-        """Запуск по расписанию"""
-        print(f"\n🤖 Бот запущен!")
-        print(f"⏰ Интервал парсинга: каждые {PARSE_INTERVAL_MINUTES} минут")
-        print(f"🕒 Фильтр новых приложений: {FILTER_HOURS} часов")
-        print(f"📢 Активных каналов: {len(self.posters)}\n")
+    if not apps:
+        print("❌ Не удалось получить приложения")
+        return
+    
+    app = apps[0]
+    print(f"📱 Тестовое приложение: {app['label']}\n")
+    
+    # Постим в первый канал
+    first_channel = list(CHANNELS.keys())[0]
+    print(f"📢 Канал: {first_channel}\n")
+    
+    poster = TelegramPoster(first_channel)
+    success = poster.post_app(app)
+    
+    if success:
+        print("✅ Тестовый пост успешно отправлен!")
+    else:
+        print("❌ Ошибка отправки")
+
+
+def main():
+    """
+    Точка входа
+    """
+    
+    # Проверка аргументов
+    if len(sys.argv) > 1:
+        command = sys.argv[1]
         
-        # Тестируем подключения
-        asyncio.run(self.test_all_connections())
+        if command == 'check':
+            check_configuration()
+            return
         
-        # Первый запуск сразу
-        print("🚀 Первый запуск через 10 секунд...\n")
-        time.sleep(10)
-        asyncio.run(self.process_apps())
+        elif command == 'test':
+            test_post()
+            return
         
-        # Настраиваем планировщик
-        scheduler = BlockingScheduler()
-        scheduler.add_job(
-            lambda: asyncio.run(self.process_apps()),
-            trigger=IntervalTrigger(minutes=PARSE_INTERVAL_MINUTES),
-            id='parse_and_post',
-            name='Парсинг и постинг приложений',
-            replace_existing=True
-        )
+        elif command == 'once':
+            process_new_apps()
+            return
         
-        try:
-            scheduler.start()
-        except (KeyboardInterrupt, SystemExit):
-            print("\n👋 Бот остановлен")
-            scheduler.shutdown()
+        else:
+            print("❌ Неизвестная команда")
+            print("\nДоступные команды:")
+            print("  python main.py check  - проверка конфигурации")
+            print("  python main.py test   - тестовый пост")
+            print("  python main.py once   - одна проверка новых приложений")
+            print("  python main.py        - запуск по расписанию")
+            return
+    
+    # Запуск по расписанию
+    print("⏰ Запуск планировщика...\n")
+    check_configuration()
+    
+    scheduler = BlockingScheduler()
+    
+    # Каждые 30 минут
+    scheduler.add_job(
+        process_new_apps,
+        CronTrigger(minute='*/30'),
+        id='parse_and_post',
+        name='Парсинг и постинг новых приложений',
+        replace_existing=True
+    )
+    
+    print(f"\n✅ Бот запущен!")
+    print(f"⏰ Следующая проверка: {datetime.now().replace(second=0, microsecond=0)}")
+    print("📊 Логи сохраняются в bot.log")
+    print("\nНажмите Ctrl+C для остановки\n")
+    
+    try:
+        scheduler.start()
+    except (KeyboardInterrupt, SystemExit):
+        print("\n👋 Бот остановлен")
 
 
 if __name__ == '__main__':
-    import sys
-    
-    bot = ApptekaBot()
-    
-    # Проверяем аргументы командной строки
-    if len(sys.argv) > 1:
-        if sys.argv[1] == 'test':
-            print("🧪 Режим тестирования (один запуск)")
-            bot.run_once()
-        elif sys.argv[1] == 'check':
-            print("🔍 Проверка подключений")
-            asyncio.run(bot.test_all_connections())
-        else:
-            print("Использование:")
-            print("  python main.py          # Запуск по расписанию")
-            print("  python main.py test     # Один запуск (тест)")
-            print("  python main.py check    # Проверка подключений")
-    else:
-        # Обычный запуск по расписанию
-        bot.run_scheduler()
+    main()
