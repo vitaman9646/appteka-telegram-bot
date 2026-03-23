@@ -3,7 +3,7 @@
 """
 
 from datetime import datetime
-from ai_generator import get_ai_description  # ← НОВОЕ
+from ai_generator import get_ai_description
 import logging
 
 logger = logging.getLogger(__name__)
@@ -49,7 +49,7 @@ def format_post(app: dict, channel_type: str) -> dict:
     )
     
     # Хештег
-    hashtag = f"#{category.lower().replace(' ', '_')}"
+    hashtag = f"#{category.lower().replace(' ', '_').replace('-', '_')}"
     
     # Формируем пост
     text = f"""🔥 {name}
@@ -76,3 +76,10 @@ def format_post(app: dict, channel_type: str) -> dict:
         'icon_url': app.get('icon'),
         'app_url': app_url
     }
+
+
+def format_error_message(error: str) -> str:
+    """
+    Форматирует сообщение об ошибке
+    """
+    return f"⚠️ Ошибка:\n{error}"
