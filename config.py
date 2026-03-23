@@ -3,32 +3,29 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Telegram настройки
+# Telegram настройки (3 канала)
 BOTS = {
-    'main': {
-        'token': os.getenv('BOT_TOKEN_MAIN'),
-        'channel': os.getenv('CHANNEL_MAIN'),
-        'categories': 'all',  # Все категории
-        'min_downloads': int(os.getenv('MIN_DOWNLOADS', 5))
-    },
     'games': {
         'token': os.getenv('BOT_TOKEN_GAMES'),
         'channel': os.getenv('CHANNEL_GAMES'),
-        'categories': [9],  # Games
-        'min_downloads': 3
-    },
-    'tools': {
-        'token': os.getenv('BOT_TOKEN_TOOLS'),
-        'channel': os.getenv('CHANNEL_TOOLS'),
-        'categories': [1, 2, 3, 4],  # Tools, Productivity, etc
-        'min_downloads': 3
+        'categories': [9],  # Только игры
+        'min_downloads': 3,
+        'description': 'Игры с модами'
     },
     'premium': {
         'token': os.getenv('BOT_TOKEN_PREMIUM'),
         'channel': os.getenv('CHANNEL_PREMIUM'),
-        'categories': 'all',
-        'keywords': ['premium', 'pro', 'unlocked', 'mod', 'patched'],
-        'min_downloads': 10
+        'categories': 'all',  # Все категории
+        'keywords': ['premium', 'pro', 'unlocked', 'mod', 'patched', 'paid', 'full'],
+        'min_downloads': 5,
+        'description': 'Премиум приложения'
+    },
+    'media': {
+        'token': os.getenv('BOT_TOKEN_MEDIA'),
+        'channel': os.getenv('CHANNEL_MEDIA'),
+        'categories': [3, 14],  # Медиа + Музыка
+        'min_downloads': 5,
+        'description': 'Музыка и видео'
     }
 }
 
