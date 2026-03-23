@@ -16,10 +16,8 @@ from database import Database
 from poster import TelegramPoster
 from ai_generator import AIGenerator
 
-# Загрузка .env
 load_dotenv()
 
-# Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -100,15 +98,114 @@ def check_configuration():
     print("\n✅ Конфигурация корректна!")
 
 
+def init_database():
+    """
+    ХОЛОДНЫЙ СТАРТ: Заполнение БД без постинга
+    Помечает все существующие приложения как "обработанные"
+    """
+    print("🗄️ ХОЛОДНЫЙ СТАРТ: Инициализация базы данных\n")
+    print("⚠️ Это нужно сделать ОДИН РАЗ перед первым запуском\n")
+    
+    parser = ApptekaPars()
+    db = Database()
+    
+    # Получаем ВСЕ приложения (максимум что отдаёт API)
+    print("📥 Загрузка приложений из Appteka...")
+    all_apps = parser.get_latest_apps(limit=1000)
+    print(f"✅ Получено: {len(all_apps)} приложений\n")
+    
+    added_count = 0
+    
+    # Помечаем все приложения для всех каналов
+    for channel_name in CHANNELS.keys():
+        print(f"📝 Обработка канала: {channel_name}")
+        
+        for app in all_apps:
+            app_id = app['app_id']
+            
+            # Проверяем, нет ли уже в БД
+            if not db.is_posted(app_id, channel_name):
+                db.mark_as_posted(app_id, channel_name)
+                added_count += 1
+        
+        print(f"   ✅ Добавлено записей: {added_count}\n")
+        added_count = 0
+    
+    total = db.count_posted_apps()
+    print(f"✅ Инициализация завершена!")
+    print(f"📊 Всего записей в БД: {total}")
+    print(f"\n💡 Теперь можно:")
+    print(f"   1. python main.py fill 30  — залить 30 постов для старта")
+    print(f"   2. python main.py          — запустить постоянную работу")
+
+
+def fill_archive(posts_per_channel=10):
+    """
+    ПОСТЕПЕННЫЙ СТАРТ: Постинг старых приложений
+    
+    Args:
+        posts_per_channel: Сколько старых постов залить в каждый канал
+    """
+    print(f"📚 ПОСТЕПЕННОЕ НАПОЛНЕНИЕ: {posts_per_channel} постов на канал\n")
+    
+    parser = ApptekaPars()
+    db = Database()
+    
+    # Получаем архив
+    print("📥 Загрузка приложений...")
+    apps = parser.get_latest_apps(limit=500)
+    print(f"✅ Загружено: {len(apps)} приложений\n")
+    
+    total_posted = 0
+    
+    for channel_name, channel_config in CHANNELS.items():
+        print(f"📢 Канал: {channel_name.upper()}")
+        
+        poster = TelegramPoster(channel_name)
+        filtered_apps = parser.filter_for_channel(apps, channel_config)
+        
+        print(f"   Подходящих приложений: {len(filtered_apps)}")
+        
+        posted = 0
+        
+        for app in filtered_apps:
+            if posted >= posts_per_channel:
+                break
+            
+            app_id = app['app_id']
+            
+            # Постим только непощенные
+            if not db.is_posted(app_id, channel_name):
+                print(f"   📤 Пост {posted + 1}/{posts_per_channel}: {app['label'][:40]}...", end=' ')
+                
+                success = poster.post_app(app)
+                
+                if success:
+                    db.mark_as_posted(app_id, channel_name)
+                    posted += 1
+                    total_posted += 1
+                    print("✅")
+                    time.sleep(8)  # Пауза между постами (антиспам Telegram)
+                else:
+                    print("❌")
+        
+        print(f"   📊 Запощено: {posted}/{posts_per_channel}\n")
+    
+    print(f"✅ Заливка завершена!")
+    print(f"📊 Всего запощено: {total_posted} постов")
+    print(f"\n💡 Можно:")
+    print(f"   • Повторить: python main.py fill {posts_per_channel}")
+    print(f"   • Запустить бота: python main.py")
+
+
 def process_new_apps():
     """
-    Основная функция: парсинг + постинг
+    Основная функция: парсинг + постинг ТОЛЬКО новых
     """
     logger.info("=" * 50)
     logger.info("🚀 Запуск обработки новых приложений")
     
     try:
-        # Инициализация
         parser = ApptekaPars()
         db = Database()
         
@@ -144,7 +241,7 @@ def process_new_apps():
                     posted_count += 1
                     logger.info(f"   ✅ Запощено: {app['label']}")
                     
-                    # Пауза между постами (антиспам)
+                    # Пауза между постами
                     time.sleep(5)
                 else:
                     logger.error(f"   ❌ Не удалось запостить: {app['label']}")
@@ -169,19 +266,54 @@ def test_post():
         return
     
     app = apps[0]
-    print(f"📱 Тестовое приложение: {app['label']}\n")
+    print(f"📱 Тестовое приложение: {app['label']}")
+    print(f"📦 Категория: {app['category']['name']['ru']}")
+    print(f"📊 Скачиваний: {app.get('downloads', 0)}\n")
     
     # Постим в первый канал
     first_channel = list(CHANNELS.keys())[0]
     print(f"📢 Канал: {first_channel}\n")
     
     poster = TelegramPoster(first_channel)
+    
+    print("📤 Отправка...", end=' ')
     success = poster.post_app(app)
     
     if success:
+        print("✅\n")
         print("✅ Тестовый пост успешно отправлен!")
+        print("🔍 Проверь канал")
     else:
+        print("❌\n")
         print("❌ Ошибка отправки")
+
+
+def show_stats():
+    """
+    Показать статистику БД
+    """
+    print("📊 СТАТИСТИКА БАЗЫ ДАННЫХ\n")
+    
+    db = Database()
+    
+    total = db.count_posted_apps()
+    print(f"Всего записей: {total}\n")
+    
+    # Статистика по каналам
+    import sqlite3
+    conn = sqlite3.connect(db.db_path)
+    cursor = conn.cursor()
+    
+    for channel_name in CHANNELS.keys():
+        cursor.execute(
+            "SELECT COUNT(*) FROM posted_apps WHERE channel_name = ?",
+            (channel_name,)
+        )
+        count = cursor.fetchone()[0]
+        print(f"  {channel_name.upper()}: {count} постов")
+    
+    conn.close()
+    print()
 
 
 def main():
@@ -197,6 +329,22 @@ def main():
             check_configuration()
             return
         
+        elif command == 'init':
+            # Холодный старт
+            init_database()
+            return
+        
+        elif command == 'fill':
+            # Заливка архива
+            posts = int(sys.argv[2]) if len(sys.argv) > 2 else 10
+            fill_archive(posts_per_channel=posts)
+            return
+        
+        elif command == 'stats':
+            # Статистика
+            show_stats()
+            return
+        
         elif command == 'test':
             test_post()
             return
@@ -206,12 +354,15 @@ def main():
             return
         
         else:
-            print("❌ Неизвестная команда")
-            print("\nДоступные команды:")
-            print("  python main.py check  - проверка конфигурации")
-            print("  python main.py test   - тестовый пост")
-            print("  python main.py once   - одна проверка новых приложений")
-            print("  python main.py        - запуск по расписанию")
+            print("❌ Неизвестная команда\n")
+            print("📋 Доступные команды:\n")
+            print("  python main.py check       - проверка конфигурации")
+            print("  python main.py init        - холодный старт (заполнить БД без постинга)")
+            print("  python main.py fill [N]    - залить N старых постов на канал (по умолчанию 10)")
+            print("  python main.py stats       - статистика БД")
+            print("  python main.py test        - тестовый пост")
+            print("  python main.py once        - одна проверка новых приложений")
+            print("  python main.py             - запуск по расписанию\n")
             return
     
     # Запуск по расписанию
@@ -229,10 +380,10 @@ def main():
         replace_existing=True
     )
     
-    print(f"\n✅ Бот запущен!")
-    print(f"⏰ Следующая проверка: {datetime.now().replace(second=0, microsecond=0)}")
-    print("📊 Логи сохраняются в bot.log")
-    print("\nНажмите Ctrl+C для остановки\n")
+    print(f"\n✅ Бот запущен в режиме PRODUCTION!")
+    print(f"⏰ Проверка новых приложений каждые 30 минут")
+    print(f"📊 Логи: bot.log")
+    print(f"\n💡 Нажми Ctrl+C для остановки\n")
     
     try:
         scheduler.start()
